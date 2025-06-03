@@ -1,4 +1,10 @@
-import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse, AxiosError } from 'axios';
+import axios, { 
+  AxiosInstance, 
+  AxiosRequestConfig, 
+  AxiosResponse, 
+  AxiosError,
+  InternalAxiosRequestConfig
+} from 'axios';
 import { SignupFormData, LoginFormData } from '@/lib/validations';
 
 declare global {
@@ -14,18 +20,25 @@ const API_URL = typeof window !== 'undefined'
   : 'http://localhost:8000';
 
 interface AuthResponse {
-  access: string;
-  refresh: string;
+  access_token: string;
+  refresh_token: string;
   user: {
     id: number;
     email: string;
     username: string;
     profile_picture?: string;
+    google_id?: string;
   };
 }
 
 interface RefreshResponse {
-  access: string;
+  access_token: string;
+  refresh_token: string;
+}
+
+interface ApiError {
+  message?: string;
+  [key: string]: any;
 }
 
 // Get CSRF token from cookie
@@ -47,7 +60,7 @@ const api: AxiosInstance = axios.create({
 });
 
 // Add CSRF token and auth token to requests
-api.interceptors.request.use((config: AxiosRequestConfig) => {
+api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const token = localStorage.getItem('accessToken');
   const csrfToken = getCsrfToken();
   
@@ -66,18 +79,18 @@ api.interceptors.request.use((config: AxiosRequestConfig) => {
 api.interceptors.response.use(
   (response: AxiosResponse) => response,
   async (error: AxiosError) => {
-    const originalRequest = error.config as AxiosRequestConfig & { _retry?: boolean };
+    const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true;
       try {
         const refreshToken = localStorage.getItem('refreshToken');
         const response = await axios.post<RefreshResponse>(`${API_URL}/auth/token/refresh/`, {
-          refresh: refreshToken,
+          refresh_token: refreshToken,
         });
-        const { access } = response.data;
-        localStorage.setItem('accessToken', access);
+        const { access_token } = response.data;
+        localStorage.setItem('accessToken', access_token);
         if (api.defaults.headers.common) {
-          api.defaults.headers.common['Authorization'] = `Bearer ${access}`;
+          api.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
         }
         return api(originalRequest);
       } catch (refreshError) {
@@ -91,74 +104,76 @@ api.interceptors.response.use(
   }
 );
 
-// Enhanced error handling
-const handleAxiosError = (error: AxiosError): never => {
-  if (error.response?.data?.message) {
-    throw new Error(error.response.data.message);
+// Enhanced error handling with better error messages
+const handleAxiosError = (error: AxiosError<ApiError>): never => {
+  if (error.response?.data) {
+    const data = error.response.data;
+    if (typeof data === 'object') {
+      // Handle Django REST framework error format
+      const messages = Object.values(data).flat();
+      throw new Error(messages.join('. '));
+    }
+    throw new Error(String(data));
   }
   if (error.response?.status === 401) {
-    signOut(); // Force sign out on authentication error
-    throw new Error('Session expired. Please sign in again.');
+    signOut();
+    throw new Error('Your session has expired. Please sign in again.');
+  }
+  if (error.response?.status === 403) {
+    throw new Error('You do not have permission to perform this action.');
+  }
+  if (error.response?.status === 404) {
+    throw new Error('The requested resource was not found.');
+  }
+  if (error.response?.status === 500) {
+    throw new Error('An internal server error occurred. Please try again later.');
   }
   throw new Error(error.message || 'An unknown error occurred');
 };
 
 // Add token management
-const setAuthTokens = (access: string, refresh: string) => {
-  localStorage.setItem('accessToken', access);
-  localStorage.setItem('refreshToken', refresh);
+const setAuthTokens = (accessToken: string, refreshToken: string) => {
+  localStorage.setItem('accessToken', accessToken);
+  localStorage.setItem('refreshToken', refreshToken);
   if (api.defaults.headers.common) {
-    api.defaults.headers.common['Authorization'] = `Bearer ${access}`;
+    api.defaults.headers.common['Authorization'] = `Bearer ${accessToken}`;
   }
 };
 
 export const signupUser = async (data: SignupFormData): Promise<AuthResponse> => {
   try {
     const response = await api.post<AuthResponse>('/auth/register/', data);
+    const { access_token, refresh_token } = response.data;
+    setAuthTokens(access_token, refresh_token);
     return response.data;
   } catch (err) {
-    const error = err as AxiosError;
-    if (error.response?.data?.message) {
-      throw new Error(error.response.data.message);
-    }
-    throw new Error(error.message || 'An unknown error occurred');
+ handleAxiosError(err as AxiosError<ApiError>);
   }
 };
 
 export const signinUser = async (data: LoginFormData): Promise<AuthResponse> => {
   try {
-    const response = await api.post<AuthResponse>('/auth/token/', data);
-    const { access, refresh } = response.data;
-    setAuthTokens(access, refresh);
+    const response = await api.post<AuthResponse>('/auth/login/', data);
+    const { access_token, refresh_token } = response.data;
+    setAuthTokens(access_token, refresh_token);
     return response.data;
   } catch (err) {
-    return handleAxiosError(err as AxiosError);
+    handleAxiosError(err as AxiosError<ApiError>);
+    throw new Error('Sign-in failed.'); // Ensure a return or throw
   }
 };
 
-export const signOut = () => {
-  localStorage.removeItem('accessToken');
-  localStorage.removeItem('refreshToken');
-  window.location.href = '/auth';
-};
-
-export const initiateGoogleLogin = () => {
-  window.location.href = `${API_URL}/auth/google/login/`;
-};
-
-export const getProtectedData = async () => {
+export const getProtectedData = async (): Promise<any> => {
   try {
     const response = await api.get('/auth/protected/');
     return response.data;
   } catch (err) {
-    const error = err as AxiosError;
-    if (error.response?.data?.message) {
-      throw new Error(error.response.data.message);
-    }
-    throw new Error(error.message || 'An unknown error occurred');
+    handleAxiosError(err as AxiosError<ApiError>);
   }
 };
 
-export const isAuthenticated = () => {
-  return !!localStorage.getItem('accessToken');
+export const isAuthenticated = (): boolean => {
+  const token = localStorage.getItem('accessToken');
+  return !!token;
 };
+

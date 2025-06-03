@@ -14,6 +14,8 @@ from django.contrib.auth import get_user_model
 import requests as http_requests
 from urllib.parse import urlencode
 from rest_framework_simplejwt.tokens import RefreshToken
+from django.contrib.auth import authenticate
+from rest_framework import serializers
 
 User = get_user_model()
 
@@ -223,3 +225,22 @@ class IndexView(APIView):
 
     def get(self, request):
         return render(request, 'authentication/index.html')
+
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    def validate(self, attrs):
+        email = attrs.get("email")
+        password = attrs.get("password")
+
+        if email is None or password is None:
+            raise serializers.ValidationError("Email and password are required.")
+
+        user = authenticate(request=self.context.get("request"), email=email, password=password)
+
+        if user is None:
+            raise InvalidToken("Invalid email or password.")
+
+        attrs["username"] = user.username  # Map email to username for token generation
+        return super().validate(attrs)
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    serializer_class = CustomTokenObtainPairSerializer
