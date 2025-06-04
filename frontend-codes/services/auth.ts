@@ -1,10 +1,4 @@
-import axios, { 
-  AxiosInstance, 
-  AxiosRequestConfig, 
-  AxiosResponse, 
-  AxiosError,
-  InternalAxiosRequestConfig
-} from 'axios';
+import axios from 'axios';
 import { SignupFormData, LoginFormData } from '@/lib/validations';
 
 declare global {
@@ -16,8 +10,8 @@ declare global {
 }
 
 const API_URL = typeof window !== 'undefined' 
-  ? (window._env_?.NEXT_PUBLIC_API_URL || 'http://localhost:8000')
-  : 'http://localhost:8000';
+  ? (window._env_?.NEXT_PUBLIC_API_URL || 'http://localhost:8002')
+  : 'http://localhost:8002';
 
 interface AuthResponse {
   access_token: string;
@@ -51,7 +45,7 @@ const getCsrfToken = (): string | null => {
 };
 
 // Create axios instance with default config
-const api: AxiosInstance = axios.create({
+const api = axios.create({
   baseURL: API_URL,
   withCredentials: true,
   headers: {
@@ -60,7 +54,7 @@ const api: AxiosInstance = axios.create({
 });
 
 // Add CSRF token and auth token to requests
-api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
+api.interceptors.request.use((config) => {
   const token = localStorage.getItem('accessToken');
   const csrfToken = getCsrfToken();
   
@@ -77,26 +71,30 @@ api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
 
 // Handle token refresh
 api.interceptors.response.use(
-  (response: AxiosResponse) => response,
-  async (error: AxiosError) => {
-    const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true;
       try {
         const refreshToken = localStorage.getItem('refreshToken');
+        if (!refreshToken) {
+          throw new Error('No refresh token available');
+        }
+        
         const response = await axios.post<RefreshResponse>(`${API_URL}/auth/token/refresh/`, {
-          refresh_token: refreshToken,
+          refresh: refreshToken,
         });
-        const { access_token } = response.data;
-        localStorage.setItem('accessToken', access_token);
-        if (api.defaults.headers.common) {
-          api.defaults.headers.common['Authorization'] = `Bearer ${access_token}`;
+        
+        const { access_token, refresh_token } = response.data;
+        setAuthTokens(access_token, refresh_token);
+        
+        if (originalRequest.headers) {
+          originalRequest.headers.Authorization = `Bearer ${access_token}`;
         }
         return api(originalRequest);
       } catch (refreshError) {
-        localStorage.removeItem('accessToken');
-        localStorage.removeItem('refreshToken');
-        window.location.href = '/auth';
+        signOut();
         return Promise.reject(refreshError);
       }
     }
@@ -104,31 +102,42 @@ api.interceptors.response.use(
   }
 );
 
+interface AxiosErrorResponse {
+  response?: {
+    data?: any;
+    status?: number;
+  };
+  message?: string;
+}
+
 // Enhanced error handling with better error messages
-const handleAxiosError = (error: AxiosError<ApiError>): never => {
-  if (error.response?.data) {
-    const data = error.response.data;
+const handleAxiosError = (error: unknown): never => {
+  const axiosError = error as AxiosErrorResponse;
+  
+  if (axiosError.response?.data) {
+    const data = axiosError.response.data;
     if (typeof data === 'object') {
-      // Handle Django REST framework error format
       const messages = Object.values(data).flat();
       throw new Error(messages.join('. '));
     }
     throw new Error(String(data));
   }
-  if (error.response?.status === 401) {
+  
+  if (axiosError.response?.status === 401) {
     signOut();
     throw new Error('Your session has expired. Please sign in again.');
   }
-  if (error.response?.status === 403) {
+  if (axiosError.response?.status === 403) {
     throw new Error('You do not have permission to perform this action.');
   }
-  if (error.response?.status === 404) {
+  if (axiosError.response?.status === 404) {
     throw new Error('The requested resource was not found.');
   }
-  if (error.response?.status === 500) {
+  if (axiosError.response?.status === 500) {
     throw new Error('An internal server error occurred. Please try again later.');
   }
-  throw new Error(error.message || 'An unknown error occurred');
+  
+  throw new Error(axiosError.message || 'An unknown error occurred');
 };
 
 // Add token management
@@ -140,6 +149,16 @@ const setAuthTokens = (accessToken: string, refreshToken: string) => {
   }
 };
 
+// Sign out user and clear tokens
+const signOut = () => {
+  localStorage.removeItem('accessToken');
+  localStorage.removeItem('refreshToken');
+  if (api.defaults.headers.common) {
+    delete api.defaults.headers.common['Authorization'];
+  }
+  window.location.href = '/auth';
+};
+
 export const signupUser = async (data: SignupFormData): Promise<AuthResponse> => {
   try {
     const response = await api.post<AuthResponse>('/auth/register/', data);
@@ -147,19 +166,18 @@ export const signupUser = async (data: SignupFormData): Promise<AuthResponse> =>
     setAuthTokens(access_token, refresh_token);
     return response.data;
   } catch (err) {
- handleAxiosError(err as AxiosError<ApiError>);
+    throw handleAxiosError(err);
   }
 };
 
 export const signinUser = async (data: LoginFormData): Promise<AuthResponse> => {
   try {
-    const response = await api.post<AuthResponse>('/auth/login/', data);
+    const response = await api.post<AuthResponse>('/auth/token/', data);
     const { access_token, refresh_token } = response.data;
     setAuthTokens(access_token, refresh_token);
     return response.data;
   } catch (err) {
-    handleAxiosError(err as AxiosError<ApiError>);
-    throw new Error('Sign-in failed.'); // Ensure a return or throw
+    throw handleAxiosError(err);
   }
 };
 
@@ -168,7 +186,7 @@ export const getProtectedData = async (): Promise<any> => {
     const response = await api.get('/auth/protected/');
     return response.data;
   } catch (err) {
-    handleAxiosError(err as AxiosError<ApiError>);
+    throw handleAxiosError(err);
   }
 };
 

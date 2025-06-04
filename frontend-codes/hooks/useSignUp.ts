@@ -1,4 +1,3 @@
-
 "use client"
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { SignupFormData } from '@/lib/validations';
@@ -19,11 +18,17 @@ export const useSignupMutation = () => {
     mutationFn: signupUser,
     
     onSuccess: (data) => {
-   
       console.log('Signup successful:', data);
 
-      toast.success('Welcome!', {
-        description: `Account created successfully for`,
+      // Show success toast with more prominence
+      toast.success('Account Created Successfully!', {
+        description: 'Your account has been created. Please sign in with your credentials.',
+        duration: 5000,
+        style: { fontWeight: 'bold' }, // Replace 'important' with a valid style property
+        action: {
+          label: 'Sign In',
+          onClick: () => window.location.reload()
+        },
       });
     },
     

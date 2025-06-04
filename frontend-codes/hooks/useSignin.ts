@@ -21,14 +21,14 @@ export const useSigninMutation = () => {
    
       console.log('Login successful:', data);
 
-      toast.success('Welcome!', {
-        description: `Account created successfully for`,
+      toast.success('Welcome back!', {
+        description: 'Successfully signed in to your account',
       });
     },
     
     onError: (error) => {
     console.error('Signin failed:', error.message);
-    toast.error('Signup Failed', {
+    toast.error('Sign in Failed', {
         description: error.message || 'Something went wrong. Please try again.',
         duration: 5000,
       });
